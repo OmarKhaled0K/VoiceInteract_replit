@@ -1,15 +1,12 @@
 // Main application JavaScript for voice conversation app (Flask version)
 
 // Global variables
-let mediaRecorder = null;
-let audioContext = null;
-let microphoneStream = null;
+let recognition = null;
 let isRecording = false;
 let audioQueue = [];
 let isPlaying = false;
-let recordedChunks = [];
-let dummyTranscriptionInterval = null;
-let processingComplete = false;
+let finalTranscript = '';
+let recognitionSupported = false;
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
@@ -18,6 +15,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Initialize the application
 function initializeApp() {
+    // Check if speech recognition is supported
+    checkSpeechRecognitionSupport();
+    
     // Set up UI elements
     setupButtons();
     
@@ -26,6 +26,19 @@ function initializeApp() {
     
     // Update status
     updateStatus('Ready');
+}
+
+// Check if the browser supports speech recognition
+function checkSpeechRecognitionSupport() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+        showMessage('Speech recognition is not supported in this browser. Please try Chrome or Edge.', 'warning');
+        document.getElementById('playButton').disabled = true;
+        recognitionSupported = false;
+    } else {
+        recognitionSupported = true;
+    }
 }
 
 // Set up button event listeners
@@ -59,70 +72,80 @@ async function checkApiKeys() {
     }
 }
 
-// Start recording from the microphone
-async function startRecording() {
-    if (isRecording) return;
+// Start recording from the microphone using Web Speech API
+function startRecording() {
+    if (isRecording || !recognitionSupported) return;
     
     try {
-        // Request microphone access
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        microphoneStream = stream;
+        // Set up the SpeechRecognition object
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognition = new SpeechRecognition();
         
-        // Create media recorder to capture audio data
-        mediaRecorder = new MediaRecorder(stream);
-        recordedChunks = [];
+        // Configure recognition settings
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
         
-        mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                recordedChunks.push(event.data);
+        // Reset transcription
+        finalTranscript = '';
+        
+        // Set up recognition event handlers
+        recognition.onstart = () => {
+            console.log('Speech recognition started');
+            isRecording = true;
+            updateStatus('Listening... Speak now!');
+            
+            // Update UI
+            document.getElementById('playButton').disabled = true;
+            document.getElementById('stopButton').disabled = false;
+            
+            // Clear previous transcriptions
+            document.getElementById('transcriptionText').textContent = '';
+            document.getElementById('aiResponseText').textContent = '';
+        };
+        
+        recognition.onresult = (event) => {
+            let interimTranscript = '';
+            
+            // Process the results
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                
+                if (event.results[i].isFinal) {
+                    finalTranscript += ' ' + transcript;
+                    // Update with final result
+                    updateTranscript(finalTranscript.trim(), false);
+                } else {
+                    interimTranscript += transcript;
+                    // Update with interim result
+                    updateTranscript(interimTranscript, true);
+                }
             }
         };
         
-        mediaRecorder.start(1000); // Collect data every second
+        recognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+            showMessage(`Speech recognition error: ${event.error}`, 'error');
+            stopRecording();
+        };
         
-        // Update UI
-        document.getElementById('playButton').disabled = true;
-        document.getElementById('stopButton').disabled = false;
+        recognition.onend = () => {
+            // This can trigger when the user stops speaking or on errors
+            // We'll handle the actual stop in the stopRecording function
+            if (isRecording) {
+                // If we're still in recording mode but recognition stopped,
+                // restart it to keep listening
+                recognition.start();
+            }
+        };
         
-        // Clear previous transcriptions
-        document.getElementById('transcriptionText').textContent = '';
-        document.getElementById('aiResponseText').textContent = '';
-        
-        isRecording = true;
-        updateStatus('Listening... Speak now!');
-        
-        // Since we don't have real-time WebSockets in this simplified version,
-        // we'll simulate partial transcriptions with a timer
-        simulatePartialTranscriptions();
+        // Start speech recognition
+        recognition.start();
         
     } catch (error) {
-        console.error('Error starting recording:', error);
-        showMessage(`Could not access microphone: ${error.message}`, 'error');
+        console.error('Error starting speech recognition:', error);
+        showMessage(`Could not start speech recognition: ${error.message}`, 'error');
     }
-}
-
-// Simulate partial transcriptions while recording
-function simulatePartialTranscriptions() {
-    // Clear any existing interval
-    if (dummyTranscriptionInterval) {
-        clearInterval(dummyTranscriptionInterval);
-    }
-    
-    const partialTexts = [
-        'Listening...',
-        'Processing audio...',
-        'Recognizing speech...'
-    ];
-    
-    let index = 0;
-    dummyTranscriptionInterval = setInterval(() => {
-        if (isRecording) {
-            updateTranscript(partialTexts[index % partialTexts.length], true);
-            index++;
-        } else {
-            clearInterval(dummyTranscriptionInterval);
-        }
-    }, 2000);
 }
 
 // Stop recording
@@ -130,19 +153,10 @@ async function stopRecording() {
     if (!isRecording) return;
     
     try {
-        // Stop the recording
-        mediaRecorder.stop();
-        
-        // Clear simulation interval
-        if (dummyTranscriptionInterval) {
-            clearInterval(dummyTranscriptionInterval);
-            dummyTranscriptionInterval = null;
-        }
-        
-        // Stop media streams
-        if (microphoneStream) {
-            microphoneStream.getTracks().forEach(track => track.stop());
-            microphoneStream = null;
+        // Stop speech recognition
+        if (recognition) {
+            recognition.stop();
+            recognition = null;
         }
         
         // Update UI
@@ -152,28 +166,24 @@ async function stopRecording() {
         isRecording = false;
         updateStatus('Processing your request...');
         
-        // We'd normally send the audio to Speechmatics here, but we'll skip that
-        // in this simplified version and use a dummy "transcription"
-        
-        // In a real app, we would send the audio data to the Speechmatics API
-        // and get back a transcription. For now, let's simulate it:
-        await processDummyTranscription();
+        // Process the final transcript
+        if (finalTranscript.trim()) {
+            await processTranscription(finalTranscript.trim());
+        } else {
+            showMessage('No speech detected. Please try again.', 'warning');
+            updateStatus('Ready');
+        }
         
     } catch (error) {
         console.error('Error stopping recording:', error);
         showMessage(`Error stopping recording: ${error.message}`, 'error');
+        updateStatus('Ready');
     }
 }
 
-// Process a dummy transcription and continue the conversation flow
-async function processDummyTranscription() {
+// Process the transcription and continue the conversation flow
+async function processTranscription(text) {
     try {
-        // This would be the transcribed text from Speechmatics in a real app
-        const dummyText = "Hello, this is a sample transcription. Please provide a response.";
-        
-        // Display the "transcription"
-        updateTranscript(dummyText, false);
-        
         // Get response from OpenAI
         updateStatus('Getting AI response...');
         const openaiResponse = await fetch('/api/openai', {
@@ -181,7 +191,7 @@ async function processDummyTranscription() {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ text: dummyText })
+            body: JSON.stringify({ text: text })
         });
         
         if (!openaiResponse.ok) {
