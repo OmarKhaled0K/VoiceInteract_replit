@@ -7,6 +7,8 @@ let audioQueue = [];
 let isPlaying = false;
 let finalTranscript = '';
 let recognitionSupported = false;
+let silenceTimer = null;
+let lastSpeechTime = 0;
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
@@ -111,10 +113,35 @@ function startRecording() {
             for (let i = event.resultIndex; i < event.results.length; i++) {
                 const transcript = event.results[i][0].transcript;
                 
+                // Update the last speech time
+                lastSpeechTime = Date.now();
+                
+                // Clear any existing silence timer
+                if (silenceTimer) {
+                    clearTimeout(silenceTimer);
+                    silenceTimer = null;
+                }
+                
                 if (event.results[i].isFinal) {
                     finalTranscript += ' ' + transcript;
                     // Update with final result
                     updateTranscript(finalTranscript.trim(), false);
+                    
+                    // Start the silence timer - process after 500ms of silence
+                    silenceTimer = setTimeout(() => {
+                        if (isRecording && finalTranscript.trim()) {
+                            // Temporarily suspend recording while processing
+                            const currentTranscript = finalTranscript.trim();
+                            pauseRecording();
+                            processTranscription(currentTranscript).then(() => {
+                                // Clear the transcript and resume listening
+                                if (isRecording) {
+                                    finalTranscript = '';
+                                    updateTranscript('', false);
+                                }
+                            });
+                        }
+                    }, 500);
                 } else {
                     interimTranscript += transcript;
                     // Update with interim result
@@ -148,11 +175,31 @@ function startRecording() {
     }
 }
 
+// Pause recording temporarily
+function pauseRecording() {
+    try {
+        // Pause the speech recognition
+        if (recognition) {
+            recognition.stop();
+        }
+        
+        updateStatus('Processing your input...');
+    } catch (error) {
+        console.error('Error pausing recording:', error);
+    }
+}
+
 // Stop recording
 async function stopRecording() {
     if (!isRecording) return;
     
     try {
+        // Clear any existing silence timer
+        if (silenceTimer) {
+            clearTimeout(silenceTimer);
+            silenceTimer = null;
+        }
+        
         // Stop speech recognition
         if (recognition) {
             recognition.stop();
