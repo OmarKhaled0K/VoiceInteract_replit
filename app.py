@@ -5,7 +5,9 @@ import logging
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_cors import CORS
 from openai import OpenAI
-
+from dotenv  import load_dotenv
+# Load environment variables from .env file
+load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
